@@ -6,8 +6,8 @@ real-time style effects, one-key photo capture. **All effects run on the NPU**
 
 | Effect | Mode name | Source model |
 |--------|-----------|--------------|
-| Miyazaki style | hayao | CartoonGAN Hayao (Yijunmaverick, 160 input) |
-| Oil painting | oil | fast-neural-style rain-princess (ONNX model zoo, native 224) |
+| Miyazaki style | hayao | CartoonGAN Hayao (Yijunmaverick) |
+| Oil painting | oil | fast-neural-style rain-princess (ONNX model zoo) |
 | Candy | candy | fast-neural-style candy (ONNX model zoo) |
 | Glass mosaic | mosaic | fast-neural-style mosaic (ONNX model zoo) |
 | Pencil sketch | sketch | CycleGAN photo2sketch (HF fracta1l, lightweight ngf32) |
@@ -31,7 +31,7 @@ demo_style_camera/
 ├── config.yaml             # Configuration (camera / effects / saving)
 ├── run.sh                  # On-board launcher wrapper (self-locating, for root desktop sessions)
 ├── selftest.py             # Offline self-test (no camera/board needed)
-├── models/                 # Pre-converted rknn (fp16, 192x192 input, oil 224)
+├── models/                 # Pre-converted rknn (fp16, 320x320 input)
 │   └── onnx/               # Original onnx, for PC debugging / re-conversion
 ├── assets/                 # Sticker PNGs (OpenCV drawing fallback if missing)
 ├── deploy/
@@ -40,9 +40,13 @@ demo_style_camera/
 └── tools/                  # Scripts used on the build PC
     ├── fetch_style_models2.sh   # Download 6 style onnx models (HF)
     ├── export_ink_onnx.py       # CIPGAN ink .pth -> onnx
+    ├── export_320_cyclegan.py   # ukiyoe/sketch CycleGAN weights -> onnx (320 re-conversion)
     ├── fuse_instance_norm.py    # Decomposed InstanceNorm -> native ops (critical!)
     ├── convert_style.py         # onnx -> rknn (with graph surgery)
-    └── convert_all2.sh          # One-key batch conversion of 8 style models
+    ├── convert_all2.sh          # One-key batch conversion of 8 style models
+    ├── convert_all320.sh        # Batch re-convert 7 style models at 320x320
+    ├── convert_hayao320.sh      # hayao alone at 320 (CartoonGAN source)
+    └── convert_remain320.sh     # ukiyoe/ink at 320
 ```
 
 ## Usage (on board)
@@ -61,6 +65,17 @@ sudo ./run.sh --list-styles      # list available effects
 Capture: click "Capture" or press space in the UI -> full-resolution stylized
 frame saved to `photos/style_<timestamp>.jpg`. Set `save.save_original: true`
 to also save the original frame.
+
+### Quality options (config.yaml -> style)
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `input_size` | `[320, 320]` | Style model input size (all current models are 320) |
+| `detail_restore` | `1.0` | Detail restore: blend original high-frequency detail back after upscaling to reduce blur (0 disables, 0.3~1.0 recommended) |
+| `face_style` | `false` | Face-only style: apply the style inside a feathered face ellipse, keep the rest of the frame sharp |
+| `face_pose_interval` | `5` | Face detection refresh interval (frames): amortizes yolo_pose cost, lower for fast-moving subjects |
+| `strength` | `1.0` | Style strength: 1.0 full style, <1 blend with the original frame |
+| `core_mask` | `3` | NPU core: 3 = dual-core (RK3576), ~10% faster than 0/1 |
 
 ## Camera
 
@@ -128,7 +143,10 @@ python3 main.py --config config_onnx_debug.yaml                       # real-tim
 ```bash
 bash tools/fetch_style_models2.sh          # download 6 style onnx (HuggingFace)
 python3 tools/export_ink_onnx.py           # CIPGAN ink: requires cloning /tmp/CIPGAN first
-bash tools/convert_all2.sh                 # batch onnx -> rknn
+python3 tools/export_320_cyclegan.py       # ukiyoe/sketch CycleGAN weights -> onnx
+bash tools/convert_all320.sh               # batch onnx -> rknn (320x320)
+bash tools/convert_hayao320.sh             # hayao (CartoonGAN source) alone at 320
+bash tools/convert_remain320.sh            # ukiyoe/ink at 320
 ```
 
 ### Conversion Notes (hard-won lessons, do not delete)
@@ -176,10 +194,11 @@ bash tools/convert_all2.sh                 # batch onnx -> rknn
   mismatched inputs with poor interpolation (1280x720->256 aliasing), causing
   horizontal stripes/color-block artifacts on board; correct way is
   cv2.resize(INTER_LINEAR/AREA) before inference (built into stylizer.py).
-- Input 192x192 (measured 256->192 ~1.8x faster across the board, acceptable
-  quality loss by eye; oil keeps native 224); normalization mean/std=127.5
+- Input 320x320 (all models re-converted 2026-10-22 for sharpness; the older
+  192 input measured 256->192 ~1.8x faster); normalization mean/std=127.5
   baked into the rknn, feed RGB uint8 directly on board; output [-1,1]
-  (zoo family is 0~255).
+  (zoo family is 0~255). Upscale blur is mitigated by `detail_restore`
+  blending original high-frequency detail back.
 - fp16, not quantized. int8 measured **not worth it** (2026-10-16): candy
   int8@256 74ms is slower than fp16@192 (60ms); anime-family int8 175ms vs
   fp16@192 (149ms), InstanceNorm layers fall back to CPU and become the
@@ -188,7 +207,10 @@ bash tools/convert_all2.sh                 # batch onnx -> rknn
 - fast-neural-style from the model zoo uses `--norm imagenet`;
   AnimeGANv2/CycleGAN family (sketch/ukiyoe/ink) uses `--norm anime`.
 
-## Performance Reference (RK3576, librknnrt 2.5.0, measured on board 2026-10-16)
+## Performance Reference (RK3576, librknnrt 2.5.0, measured on board 2026-10-16, 192-input era)
+
+> Style numbers below were measured at 192 input; the currently shipped 320
+> models are slower and have not been re-measured yet.
 
 | Mode | Per-frame | Real-time fps |
 |------|-----------|---------------|
