@@ -352,12 +352,17 @@ class Stylizer:
     def __init__(self, cfg, sticker_cfg=None):
         self.size = tuple(cfg.get("input_size", [256, 256]))
         self.strength = float(cfg.get("strength", 1.0))
+        self.detail_restore = float(cfg.get("detail_restore", 0.6))
+        self.face_style = bool(cfg.get("face_style", False))
+        self.face_interval = max(1, int(cfg.get("face_pose_interval", 5)))
         self.core_mask = int(cfg.get("core_mask", 0))
         self.model_cfg = cfg.get("models", {}) or {}
         self.sticker_cfg = sticker_cfg or {}
         self._models = {}              # key -> StyleModel (懒加载)
         self._sticker = None
         self._load_failed = set()
+        self._face_mask = None         # 人脸区域羽化蒙版 (缓存, 定期刷新)
+        self._face_age = 0
         self.infer_ms = 0.0
 
     # ---- 配置: value 可以是路径字符串或 {path, out_range, layout} ----
@@ -426,6 +431,51 @@ class Stylizer:
         print(f"[style] 已加载贴纸模块: {pm}")
         return self._sticker
 
+    def _apply_face_region(self, frame_bgr, styled):
+        """人脸区域合成: 脸部椭圆内用风格化画面, 其余保持原图全清晰.
+
+        风格迁移模型输入只有 160~224px, 整幅放大必然发糊; 只把风格落在
+        脸部小范围区域, 模糊不可察觉. 蒙版每 face_pose_interval 帧用
+        yolo_pose 关键点刷新一次 (人脸移动慢, 摊薄检测耗时)."""
+        st = self.get_sticker()
+        if st is None:
+            return styled
+        self._face_age += 1
+        if self._face_mask is None or self._face_age >= self.face_interval:
+            self._face_age = 0
+            dets, _ = st.det.infer(frame_bgr)
+            mask = np.zeros(frame_bgr.shape[:2], np.uint8)
+            for d in dets:
+                k = d["kpts"]
+                if min(k[KPT_NOSE, 2], k[KPT_L_EYE, 2], k[KPT_R_EYE, 2]) \
+                        < KPT_VIS_THR:
+                    continue
+                nose = k[KPT_NOSE, :2]
+                eye_c = (k[KPT_L_EYE, :2] + k[KPT_R_EYE, :2]) / 2.0
+                ear_ok = min(k[KPT_L_EAR, 2], k[KPT_R_EAR, 2]) > KPT_AUX_THR
+                if ear_ok:
+                    face_w = float(np.linalg.norm(
+                        k[KPT_L_EAR, :2] - k[KPT_R_EAR, :2])) * 1.35
+                else:
+                    face_w = float(np.linalg.norm(
+                        k[KPT_L_EYE, :2] - k[KPT_R_EYE, :2])) * 2.2
+                if face_w < 16:                   # 太远, 风格化全脸也看不清
+                    continue
+                # 椭圆中心在眼连线和鼻子之间偏下, 盖住额头到下巴
+                c = eye_c + (nose - eye_c) * 0.4
+                cv2.ellipse(mask, (int(c[0]), int(c[1])),
+                            (int(face_w * 0.62), int(face_w * 0.82)),
+                            0, 0, 360, 255, -1)
+            if mask.any():
+                cv2.GaussianBlur(mask, (0, 0), 9.0, dst=mask)   # 羽化过渡
+                self._face_mask = mask
+            else:
+                self._face_mask = None
+        if self._face_mask is None:               # 没找到人脸 -> 整幅风格化
+            return styled
+        a = self._face_mask.astype(np.float32)[..., None] / 255.0
+        return (styled * a + frame_bgr * (1.0 - a)).astype(np.uint8)
+
     def stylize(self, frame_bgr, mode_key):
         """返回 (风格化帧, 耗时ms). mode_key=none 时原样返回."""
         t0 = time.time()
@@ -448,10 +498,19 @@ class Stylizer:
 
         styled = model.run(frame_bgr)
         styled = cv2.resize(styled, (frame_bgr.shape[1], frame_bgr.shape[0]),
-                            interpolation=cv2.INTER_LINEAR)
+                            interpolation=cv2.INTER_CUBIC)
+        # 模型输出分辨率低 (160~224), 直接放大整体发糊:
+        # 从原尺寸帧提取高频细节层叠回风格图, 边缘/纹理恢复清晰 (引导滤波近似)
+        if self.detail_restore > 0:
+            blur = cv2.GaussianBlur(frame_bgr, (0, 0), 3.0)
+            detail = cv2.subtract(frame_bgr, blur)      # 高频分量 (uint8 饱和安全)
+            styled = cv2.addWeighted(styled, 1.0, detail,
+                                     self.detail_restore, 0)
         if self.strength < 1.0:
             a = self.strength
             styled = cv2.addWeighted(styled, a, frame_bgr, 1.0 - a, 0)
+        if self.face_style:
+            styled = self._apply_face_region(frame_bgr, styled)
         self.infer_ms = (time.time() - t0) * 1000.0
         return styled, self.infer_ms
 

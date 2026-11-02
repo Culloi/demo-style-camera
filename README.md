@@ -6,8 +6,8 @@
 
 | 特效 | 模式名 | 来源模型 |
 |------|--------|----------|
-| 宫崎骏风 | hayao | CartoonGAN Hayao (Yijunmaverick, 160 输入) |
-| 油画 | oil | fast-neural-style rain-princess (ONNX model zoo, 原生 224) |
+| 宫崎骏风 | hayao | CartoonGAN Hayao (Yijunmaverick) |
+| 油画 | oil | fast-neural-style rain-princess (ONNX model zoo) |
 | 糖果风 | candy | fast-neural-style candy (ONNX model zoo) |
 | 玻璃马赛克 | mosaic | fast-neural-style mosaic (ONNX model zoo) |
 | 素描 | sketch | CycleGAN photo2sketch (HF fracta1l, ngf32 轻量) |
@@ -31,7 +31,7 @@ demo_style_camera/
 ├── config.yaml             # 配置 (摄像头/特效/保存)
 ├── run.sh                  # 板上启动包装 (root 开窗口用)
 ├── selftest.py             # 离线自测 (无需摄像头/板子)
-├── models/                 # 已转好的 rknn (fp16, 192x192 输入, oil 224)
+├── models/                 # 已转好的 rknn (fp16, 320x320 输入)
 │   └── onnx/               # 原始 onnx, 供 PC 调试 / 重新转换
 ├── assets/                 # 贴纸 PNG (缺失时代码用 OpenCV 画)
 ├── deploy/
@@ -40,9 +40,13 @@ demo_style_camera/
 └── tools/                  # 编译机 (10.66.84.59) 上使用的脚本
     ├── fetch_style_models2.sh   # 下载 6 个风格 onnx (HF)
     ├── export_ink_onnx.py       # CIPGAN 水墨 .pth -> onnx
+    ├── export_320_cyclegan.py   # ukiyoe/sketch CycleGAN 权重 -> onnx (320 重转)
     ├── fuse_instance_norm.py    # 分解式 InstanceNorm -> 原生算子 (关键!)
     ├── convert_style.py         # onnx -> rknn (含图手术)
-    └── convert_all2.sh          # 一键批量转换 8 个风格模型
+    ├── convert_all2.sh          # 一键批量转换 8 个风格模型
+    ├── convert_all320.sh        # 320x320 批量重转 7 个风格模型
+    ├── convert_hayao320.sh      # hayao 单独 320 重转 (换 CartoonGAN 源)
+    └── convert_remain320.sh     # ukiyoe/ink 补转 320
 ```
 
 ## 使用 (板上)
@@ -59,6 +63,17 @@ sudo ./run.sh --list-styles      # 列出可用特效
 
 拍照: UI 点"拍照"按钮或按空格 → 全分辨率风格化帧存 `photos/style_时间戳.jpg`。
 `save.save_original: true` 可同时存一张原图。
+
+### 画质选项 (config.yaml → style)
+
+| 配置 | 默认 | 说明 |
+|------|------|------|
+| `input_size` | `[320, 320]` | 风格模型输入尺寸 (当前模型全线 320) |
+| `detail_restore` | `1.0` | 细节还原: 模型输出放大后叠回原图高频细节, 改善发糊 (0 关闭, 建议 0.3~1.0) |
+| `face_style` | `false` | 人脸区域风格化: 仅脸部椭圆内用风格化画面, 其余保持原图全清晰 |
+| `face_pose_interval` | `5` | 人脸检测刷新间隔 (帧): yolo_pose 耗时摊薄, 人像移动快可调小 |
+| `strength` | `1.0` | 风格强度: 1.0 全风格, <1 与原画面混合 |
+| `core_mask` | `3` | NPU 核心: 3=双核 (RK3576), 比 0/1 快 ~10% |
 
 ## 摄像头
 
@@ -121,7 +136,10 @@ python3 main.py --config config_onnx_debug.yaml                       # 摄像�
 ```bash
 bash tools/fetch_style_models2.sh          # 下载 6 个风格 onnx (HuggingFace)
 python3 tools/export_ink_onnx.py           # CIPGAN 水墨: 需先 clone /tmp/CIPGAN
-bash tools/convert_all2.sh                 # 批量 onnx -> rknn
+python3 tools/export_320_cyclegan.py       # ukiyoe/sketch CycleGAN 权重 -> onnx
+bash tools/convert_all320.sh               # 批量 onnx -> rknn (320x320)
+bash tools/convert_hayao320.sh             # hayao (CartoonGAN 源) 单独重转
+bash tools/convert_remain320.sh            # ukiyoe/ink 补转
 ```
 
 ### 转换要点 (踩过的坑, 勿删)
@@ -162,9 +180,9 @@ bash tools/convert_all2.sh                 # 批量 onnx -> rknn
 - **喂图必须先缩放到模型输入尺寸**: RKNNLite 对尺寸不符的输入会自动缩放,
   其插值质量差 (1280x720→256 混叠), 板端出横条纹/色块伪影; 正确做法是
   先 cv2.resize(INTER_LINEAR/AREA) 再 inference (stylizer.py 已内置)。
-- 输入 192x192 (全线实测 256→192 快 ~1.8x, 目检质量损失可接受; oil 保持
-  原生 224)；归一化 mean/std=127.5 写进 rknn，板端直接喂 RGB uint8；
-  输出 [-1,1] (zoo 系为 0~255)。
+- 输入 320x320 (2026-10-22 全线重转, 换清晰度；旧版 192 输入实测 256→192
+  快 ~1.8x)；归一化 mean/std=127.5 写进 rknn，板端直接喂 RGB uint8；
+  输出 [-1,1] (zoo 系为 0~255)。放大发糊由 `detail_restore` 叠回原图高频缓解。
 - fp16 非量化。int8 实测**不划算** (2026-10-16): candy int8@256 74ms 反而
   慢于 fp16@192 (60ms); anime 系 int8 175ms 慢于 fp16@192 (149ms),
   InstanceNorm 层回退 CPU 反成瓶颈。auto-hybrid 亦无收益。
@@ -172,7 +190,9 @@ bash tools/convert_all2.sh                 # 批量 onnx -> rknn
 - 模型 zoo 的 fast-neural-style 用 `--norm imagenet`；AnimeGANv2/CycleGAN 系
   (bryandlee/sketch/ukiyoe/ink) 用 `--norm anime`。
 
-## 性能参考 (RK3576, librknnrt 2.5.0, 2026-10-16 板上实测)
+## 性能参考 (RK3576, librknnrt 2.5.0, 2026-10-16 板上实测, 192 输入时代)
+
+> 下表中风格模型为 192 输入时数据；当前发布的 320 模型耗时更高, 尚未复测。
 
 | 模式 | 单帧耗时 | 实时 fps |
 |------|---------|---------|
