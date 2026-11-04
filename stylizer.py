@@ -195,10 +195,10 @@ def _draw_rabbit_nose(img, cx, cy, fw):
 
 
 def _draw_clown_hair(img, eye_c, fw):
-    """OpenCV 画小丑假发 (头顶两侧各一簇彩色圆)."""
+    """OpenCV 画小丑假发 (发际线两侧各一簇彩色圆)."""
     colors = ((0, 200, 255), (30, 120, 255), (220, 60, 220), (70, 130, 60))
-    offs = ((-0.55, -0.45), (-0.34, -0.68), (-0.10, -0.80), (0.12, -0.72))
-    r = max(3, int(fw * 0.16))
+    offs = ((-0.40, -0.30), (-0.24, -0.44), (-0.06, -0.50), (0.10, -0.46))
+    r = max(3, int(fw * 0.085))
     for sx in (-1, 1):
         for (dx, dy), c in zip(offs, colors):
             cv2.circle(img,
@@ -207,21 +207,22 @@ def _draw_clown_hair(img, eye_c, fw):
 
 
 def _draw_clown_eyes(img, le, re, fw):
-    """OpenCV 画小丑眼妆 (白色眼眶 + 彩色菱形)."""
+    """OpenCV 画小丑眼妆 (白色眼眶描边 + 小彩色菱形, 不遮挡眼睛)."""
     for (ex, ey), c in ((le, (60, 200, 255)), (re, (255, 160, 60))):
         cv2.ellipse(img, (int(ex), int(ey)),
-                    (max(3, int(fw * 0.16)), max(4, int(fw * 0.22))),
-                    0, 0, 360, (255, 255, 255), -1)
-        pts = np.array([(ex, ey - fw * 0.42),
-                        (ex + fw * 0.10, ey - fw * 0.18),
-                        (ex, ey + fw * 0.06),
-                        (ex - fw * 0.10, ey - fw * 0.18)], np.float32)
+                    (max(4, int(fw * 0.085)), max(5, int(fw * 0.105))),
+                    0, 0, 360, (255, 255, 255),
+                    max(2, int(fw * 0.022)))
+        pts = np.array([(ex, ey - fw * 0.16),
+                        (ex + fw * 0.06, ey - fw * 0.09),
+                        (ex, ey + fw * 0.01),
+                        (ex - fw * 0.06, ey - fw * 0.09)], np.float32)
         cv2.fillPoly(img, [pts.astype(np.int32)], c)
 
 
 def _draw_clown_nose(img, cx, cy, fw):
     """OpenCV 画小丑红鼻头."""
-    r = fw * 0.22
+    r = fw * 0.10
     cv2.circle(img, (int(cx), int(cy)), int(r), (40, 40, 230), -1)
     cv2.circle(img, (int(cx - r * 0.3), int(cy - r * 0.3)),
                max(2, int(r * 0.22)), (130, 150, 255), -1)   # 高光
@@ -230,8 +231,8 @@ def _draw_clown_nose(img, cx, cy, fw):
 def _draw_clown_mouth(img, cx, cy, fw):
     """OpenCV 画小丑大红嘴 (弧线)."""
     cv2.ellipse(img, (int(cx), int(cy)),
-                (max(4, int(fw * 0.42)), max(3, int(fw * 0.30))),
-                0, 15, 165, (40, 40, 230), max(3, int(fw * 0.09)))
+                (max(4, int(fw * 0.24)), max(3, int(fw * 0.12))),
+                0, 15, 165, (40, 40, 230), max(2, int(fw * 0.03)))
 
 
 class PoseSticker:
@@ -316,13 +317,13 @@ class PoseSticker:
                 _draw_clown_eyes(img, k[KPT_L_EYE, :2], k[KPT_R_EYE, :2],
                                  face_w)
                 _draw_clown_nose(img, nose[0], nose[1], face_w)
-                _draw_clown_mouth(img, nose[0], nose[1] + face_w * 0.52,
+                _draw_clown_mouth(img, nose[0], nose[1] + face_w * 0.24,
                                   face_w)
             else:                                 # pig (OpenCV 绘制)
                 ear_l = (eye_c[0] - face_w * 0.32, eye_c[1] - face_w * 0.62)
                 ear_r = (eye_c[0] + face_w * 0.32, eye_c[1] - face_w * 0.62)
                 _draw_pig_ears(img, ear_l, ear_r, face_w * 0.35)
-                _draw_pig_nose(img, nose[0], nose[1], face_w * 0.22)
+                _draw_pig_nose(img, nose[0], nose[1], face_w * 0.115)
         return img, hit
 
     def release(self):

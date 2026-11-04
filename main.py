@@ -22,7 +22,7 @@ import numpy as np
 import yaml
 
 from stylizer import Stylizer
-from ui import AppState, make_ui
+from ui import AppState, make_ui, tr
 
 
 class App:
@@ -119,6 +119,7 @@ class App:
                 self.state.infer_ms = ms
                 self.state.mode_label = dict(self.modes).get(
                     self.current_mode, self.current_mode)
+                self.state.mode_key = self.current_mode
                 if styled.shape[1] > 1280:
                     styled = cv2.resize(
                         styled, (1280, int(1280 * styled.shape[0]
@@ -140,14 +141,14 @@ class App:
                 cv2.imwrite(
                     os.path.join(self.save_dir, f"orig_{ts}.jpg"), original,
                     [cv2.IMWRITE_JPEG_QUALITY, self.save_quality])
-            desc = "已保存" if ok else "保存失败"
-            print(f"[save] {desc}: {path}")
+            key = "event.saved" if ok else "event.save_failed"
+            print(f"[save] {tr(key, name=os.path.basename(path))}: {path}")
             with self.state.lock:
                 self.state.photo_count += 1
                 self.state.last_photo = path if ok else ""
                 self.state.events.append(
-                    (time.strftime("%H:%M:%S"), desc + ": "
-                     + os.path.basename(path)))
+                    (time.strftime("%H:%M:%S"), key,
+                     {"name": os.path.basename(path)}))
                 self.state.events = self.state.events[-50:]
 
     # ---------------- 测试模式 ----------------

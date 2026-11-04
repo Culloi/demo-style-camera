@@ -10,6 +10,123 @@ import threading
 import cv2
 
 
+# ------------------------------------------------------------------
+# 中英文切换 (i18n)
+# ------------------------------------------------------------------
+_STRINGS = {
+    "zh": {
+        "win.title": "风格化特效相机 (RK3576)",
+        "win.short": "风格化特效相机",
+        "panel.title": "风格相机",
+        "status.starting": "相机启动中…",
+        "group.style": "风格特效",
+        "group.sticker": "趣味贴纸",
+        "btn.shot": "拍照 (空格)",
+        "btn.quit": "退出",
+        "lang.btn": "EN",
+        "label.style": "特效:",
+        "log.caption": "保存记录",
+        "status.fps_none": "FPS: -  特效: -ms",
+        "status.fps": "FPS: {fps:.1f}  特效: {ms:.0f}ms  模式: {mode}",
+        "thumb.placeholder": "拍照后此处显示缩略图",
+        "photo.count": "照片: {n}",
+        "photo.dir": "照片目录: {d}",
+        "event.saved": "已保存: {name}",
+        "event.save_failed": "保存失败: {name}",
+        "cv.hint": "demo_style_camera (空格=拍照, s=切换特效, q=退出, "
+                   "l=中英文)",
+    },
+    "en": {
+        "win.title": "Style Camera (RK3576)",
+        "win.short": "Style Camera",
+        "panel.title": "Style Camera",
+        "status.starting": "Starting camera…",
+        "group.style": "Style Effects",
+        "group.sticker": "Fun Stickers",
+        "btn.shot": "Capture (Space)",
+        "btn.quit": "Quit",
+        "lang.btn": "中文",
+        "label.style": "Style:",
+        "log.caption": "Save Log",
+        "status.fps_none": "FPS: -  Style: -ms",
+        "status.fps": "FPS: {fps:.1f}  Style: {ms:.0f}ms  Mode: {mode}",
+        "thumb.placeholder": "Thumbnail appears here",
+        "photo.count": "Photos: {n}",
+        "photo.dir": "Photo folder: {d}",
+        "event.saved": "Saved: {name}",
+        "event.save_failed": "Save failed: {name}",
+        "cv.hint": "demo_style_camera (space=capture, s=switch style, "
+                   "q=quit, l=language)",
+    },
+}
+_lang = {"code": "zh"}
+
+# 特效模式英文名 (zh 名称来自 stylizer.MODE_LABELS)
+_MODE_EN = {
+    "none": "Original",
+    "hayao": "Hayao Style (NPU)",
+    "oil": "Oil Painting (NPU)",
+    "candy": "Candy (NPU)",
+    "mosaic": "Glass Mosaic (NPU)",
+    "sketch": "Sketch (NPU)",
+    "ukiyoe": "Ukiyo-e (NPU)",
+    "ink": "Ink Wash (NPU)",
+    "dog": "Dog Head (NPU)",
+    "pig": "Pig Head (NPU)",
+    "rabbit": "Rabbit Head (NPU)",
+    "clown": "Clown Head (NPU)",
+}
+
+# 按钮宽度有限, 英文按钮用短名 (完整名仍用于 tooltip/状态行)
+_MODE_EN_SHORT = {
+    "none": "Original",
+    "hayao": "Hayao",
+    "oil": "Oil",
+    "candy": "Candy",
+    "mosaic": "Mosaic",
+    "sketch": "Sketch",
+    "ukiyoe": "Ukiyo-e",
+    "ink": "Ink",
+    "dog": "Dog",
+    "pig": "Pig",
+    "rabbit": "Rabbit",
+    "clown": "Clown",
+}
+
+
+def get_lang():
+    return _lang["code"]
+
+
+def set_lang(code):
+    if code in _STRINGS:
+        _lang["code"] = code
+
+
+def tr(key, **kwargs):
+    table = _STRINGS.get(_lang["code"], _STRINGS["zh"])
+    text = table.get(key) or _STRINGS["zh"].get(key, key)
+    return text.format(**kwargs) if kwargs else text
+
+
+def mode_text(key, zh_label, short=False):
+    if get_lang() == "en":
+        table = _MODE_EN_SHORT if short else _MODE_EN
+        return table.get(key, zh_label.replace(" (NPU)", "")
+                         if short else zh_label)
+    return zh_label.replace(" (NPU)", "") if short else zh_label
+
+
+def event_text(ev):
+    _, key, params = ev
+    return tr(key, **(params or {}))
+
+
+def format_event(ev):
+    """事件 (时间, 文案 key, 参数) -> 当前语言的可显示文本."""
+    return f"[{ev[0]}] {event_text(ev)}"
+
+
 class AppState:
     """线程间共享状态."""
 
@@ -19,10 +136,11 @@ class AppState:
         self.fps = 0.0
         self.infer_ms = 0.0
         self.mode_label = "原始"
+        self.mode_key = "none"
         self.capture_request = False
         self.photo_count = 0
         self.last_photo = ""
-        self.events = []            # [(time_str, desc)]
+        self.events = []            # [(time_str, 文案key, 参数)]
         self.quit = False
 
 
@@ -89,8 +207,11 @@ class QtUI(BaseUI):
         print("[ui] PySide6 深色界面")
 
         W = QtWidgets.QMainWindow()
-        W.setWindowTitle("风格化特效相机 (RK3576)")
-        W.setMinimumSize(window_w + 300, 640)
+        W.setWindowTitle(tr("win.title"))
+        avail = W.screen().availableGeometry()
+        W.setMinimumSize(min(720, avail.width()), min(480, avail.height()))
+        W.resize(min(window_w + 300, avail.width() - 20),
+                 min(700, avail.height() - 20))
         self.win = W
 
         central = QtWidgets.QWidget()
@@ -114,14 +235,24 @@ class QtUI(BaseUI):
         p.setContentsMargins(16, 16, 16, 16)
         p.setSpacing(8)
 
-        title = QtWidgets.QLabel("风格相机", objectName="title")
-        p.addWidget(title)
-        self.status = QtWidgets.QLabel("相机启动中…", objectName="status")
+        top = QtWidgets.QHBoxLayout()
+        self.title_lb = QtWidgets.QLabel(tr("panel.title"),
+                                         objectName="title")
+        top.addWidget(self.title_lb)
+        top.addStretch(1)
+        self.lang_btn = QtWidgets.QPushButton(tr("lang.btn"))
+        self.lang_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.lang_btn.clicked.connect(self._toggle_lang)
+        top.addWidget(self.lang_btn)
+        p.addLayout(top)
+        self.status = QtWidgets.QLabel(tr("status.starting"),
+                                       objectName="status")
         self.status.setWordWrap(True)
         p.addWidget(self.status)
 
         # 特效网格: 原始+风格迁移一组, 贴纸一组
         self._btns, self._group = [], QtWidgets.QButtonGroup(self.win)
+        self._btn_keys = []
         self._group.setExclusive(True)
         try:
             from stylizer import MODE_LABELS, STICKER_MODES
@@ -129,12 +260,21 @@ class QtUI(BaseUI):
         except Exception:
             label2key, STICKER_MODES = {}, ()
 
-        def _add_grid(labels):
+        # (key, zh_label): 用于切换语言时重排按钮文字
+        self._mode_info = []
+        for lb in self.modes:
+            key = label2key.get(lb)
+            if key is None:
+                key = "none" if lb in ("原始", "Original") else lb
+            self._mode_info.append((key, lb))
+        self._key_zh = {k: lb for k, lb in self._mode_info}
+
+        def _add_grid(items):
             grid = QtWidgets.QGridLayout()
             grid.setSpacing(6)
-            for i, lb in enumerate(labels):
-                b = QtWidgets.QPushButton(lb.replace(" (NPU)", ""))
-                b.setToolTip(lb)
+            for i, (key, lb) in enumerate(items):
+                b = QtWidgets.QPushButton(mode_text(key, lb, short=True))
+                b.setToolTip(mode_text(key, lb))
                 b.setCheckable(True)
                 b.setFocusPolicy(QtCore.Qt.NoFocus)
                 b.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
@@ -143,18 +283,20 @@ class QtUI(BaseUI):
                 b.clicked.connect(lambda _=False, k=idx: self._on_mode(k))
                 self._group.addButton(b, idx)
                 self._btns.append(b)
+                self._btn_keys.append(key)
                 grid.addWidget(b, i // 3, i % 3)
             p.addLayout(grid)
 
-        plain = [lb for lb in self.modes
-                 if label2key.get(lb) not in STICKER_MODES]
-        sticker = [lb for lb in self.modes
-                   if label2key.get(lb) in STICKER_MODES]
-        g1 = QtWidgets.QLabel("风格特效", objectName="group")
+        plain = [it for it in self._mode_info if it[0] not in STICKER_MODES]
+        sticker = [it for it in self._mode_info if it[0] in STICKER_MODES]
+        self.group_labels = []
+        g1 = QtWidgets.QLabel(tr("group.style"), objectName="group")
+        self.group_labels.append((g1, "group.style"))
         p.addWidget(g1)
         _add_grid(plain)
         if sticker:
-            g2 = QtWidgets.QLabel("趣味贴纸", objectName="group")
+            g2 = QtWidgets.QLabel(tr("group.sticker"), objectName="group")
+            self.group_labels.append((g2, "group.sticker"))
             p.addWidget(g2)
             _add_grid(sticker)
         if self._btns:                      # 默认选中 "原始"
@@ -162,22 +304,25 @@ class QtUI(BaseUI):
 
         p.addStretch(1)
 
-        shot = QtWidgets.QPushButton("拍照 (空格)", objectName="shot")
-        shot.setFocusPolicy(QtCore.Qt.NoFocus)
-        shot.clicked.connect(self._shot)
-        p.addWidget(shot)
-        quitb = QtWidgets.QPushButton("退出", objectName="quit")
-        quitb.setFocusPolicy(QtCore.Qt.NoFocus)
-        quitb.clicked.connect(self._on_close)
-        p.addWidget(quitb)
+        self.shot_btn = QtWidgets.QPushButton(tr("btn.shot"),
+                                              objectName="shot")
+        self.shot_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.shot_btn.clicked.connect(self._shot)
+        p.addWidget(self.shot_btn)
+        self.quit_btn = QtWidgets.QPushButton(tr("btn.quit"),
+                                              objectName="quit")
+        self.quit_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.quit_btn.clicked.connect(self._on_close)
+        p.addWidget(self.quit_btn)
 
         self.thumb = QtWidgets.QLabel(objectName="thumb")
         self.thumb.setFixedSize(238, 90)
         self.thumb.setAlignment(QtCore.Qt.AlignCenter)
-        self.thumb.setText("拍照后此处显示缩略图")
+        self.thumb.setText(tr("thumb.placeholder"))
         self.thumb.mousePressEvent = lambda _e: self._open_photo()
         p.addWidget(self.thumb)
-        self.photolb = QtWidgets.QLabel("照片: 0", objectName="status")
+        self.photolb = QtWidgets.QLabel(tr("photo.count", n=0),
+                                        objectName="status")
         p.addWidget(self.photolb)
 
         h.addWidget(panel)
@@ -190,6 +335,31 @@ class QtUI(BaseUI):
         # 33ms 刷新定时器
         self.timer = QtCore.QTimer(W)
         self.timer.timeout.connect(self._tick)
+
+    # ---------------- 中英文切换 ----------------
+    def _toggle_lang(self):
+        set_lang("en" if get_lang() == "zh" else "zh")
+        self._apply_lang()
+
+    def _apply_lang(self):
+        self.win.setWindowTitle(tr("win.title"))
+        self.title_lb.setText(tr("panel.title"))
+        self.lang_btn.setText(tr("lang.btn"))
+        self.shot_btn.setText(tr("btn.shot"))
+        self.quit_btn.setText(tr("btn.quit"))
+        for lb, key in self.group_labels:
+            lb.setText(tr(key))
+        for b, key in zip(self._btns, self._btn_keys):
+            lb = self._key_zh.get(key, key)
+            b.setText(mode_text(key, lb, short=True))
+            b.setToolTip(mode_text(key, lb))
+        pm = self.thumb.pixmap()
+        if pm is None or pm.isNull():
+            self.thumb.setText(tr("thumb.placeholder"))
+
+    def _mode_text(self, key, fallback):
+        zh = self._key_zh.get(key)
+        return mode_text(key, zh) if zh is not None else fallback
 
     # ---------------- 回调 ----------------
     def _on_mode(self, idx):
@@ -213,7 +383,7 @@ class QtUI(BaseUI):
         if self._open_dir_via_bus(d):
             return
         # 兜底: 全部失败时在状态栏显示照片目录路径
-        self.photolb.setText(f"照片目录: {d}")
+        self.photolb.setText(tr("photo.dir", d=d))
 
     @staticmethod
     def _open_dir_direct(d):
@@ -275,6 +445,7 @@ class QtUI(BaseUI):
             frame = None if st.frame is None else st.frame.copy()
             fps, ms = st.fps, st.infer_ms
             mode, cnt = st.mode_label, st.photo_count
+            mode_key = getattr(st, "mode_key", "none")
             last = st.last_photo
             events = list(st.events)
 
@@ -289,8 +460,9 @@ class QtUI(BaseUI):
                 QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation)
             self.video.setPixmap(pm)
 
-        self.status.setText(f"{mode}   {fps:.1f} fps / {ms:.0f} ms")
-        self.photolb.setText(f"照片: {cnt}")
+        self.status.setText(f"{self._mode_text(mode_key, mode)}   "
+                            f"{fps:.1f} fps / {ms:.0f} ms")
+        self.photolb.setText(tr("photo.count", n=cnt))
 
         # 拍照: 白闪 + 缩略图 + 记录
         if cnt != self._last_cnt:
@@ -315,9 +487,10 @@ class QtUI(BaseUI):
                     QtCore.Qt.SmoothTransformation))
 
         # 保存记录 (窗口标题式, 最近 3 条)
-        tip = "  |  ".join(e for _, e in reversed(events[-3:]))
-        self.win.setWindowTitle(f"风格化特效相机  {tip}" if tip
-                                else "风格化特效相机")
+        tip = "  |  ".join(event_text(ev)
+                           for ev in reversed(events[-3:]))
+        self.win.setWindowTitle(f"{tr('win.short')}  {tip}" if tip
+                                else tr("win.short"))
 
 
 # ------------------------------------------------------------------
@@ -330,13 +503,25 @@ class TkUI(BaseUI):
         from tkinter import ttk
         self.tk = tk
         self.root = tk.Tk()
-        self.root.title("风格化特效相机 Demo (RK3576)")
+        self.root.title(tr("win.title"))
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         from PIL import Image, ImageTk
         self.PIL = (Image, ImageTk)
         self.window_w = window_w
         self.modes = modes or ["原始"]
+        try:
+            from stylizer import MODE_LABELS
+            label2key = {v: k for k, v in MODE_LABELS.items()}
+        except Exception:
+            label2key = {}
+        self._mode_info = []
+        for lb in self.modes:
+            key = label2key.get(lb)
+            if key is None:
+                key = "none" if lb in ("原始", "Original") else lb
+            self._mode_info.append((key, lb))
+        self._key_zh = {k: lb for k, lb in self._mode_info}
 
         self.video_label = tk.Label(self.root, bg="black")
         self.video_label.pack(side="top", fill="both", expand=True)
@@ -344,38 +529,68 @@ class TkUI(BaseUI):
         bar = ttk.Frame(self.root, padding=6)
         bar.pack(side="top", fill="x")
 
-        ttk.Label(bar, text="特效:").pack(side="left", padx=(8, 2))
-        self.mode_var = tk.StringVar(value=self.modes[0])
-        cb = ttk.Combobox(bar, textvariable=self.mode_var, state="readonly",
-                          values=list(self.modes), width=14)
-        cb.pack(side="left", padx=2)
-        cb.bind("<<ComboboxSelected>>", self._on_mode)
+        self.style_lb = ttk.Label(bar, text=tr("label.style"))
+        self.style_lb.pack(side="left", padx=(8, 2))
+        self.mode_var = tk.StringVar(value=mode_text(*self._mode_info[0]))
+        self.cb = ttk.Combobox(bar, textvariable=self.mode_var,
+                               state="readonly",
+                               values=[mode_text(k, lb)
+                                       for k, lb in self._mode_info],
+                               width=18)
+        self.cb.pack(side="left", padx=2)
+        self.cb.bind("<<ComboboxSelected>>", self._on_mode)
 
-        self.fps_var = tk.StringVar(value="FPS: -  特效: -ms")
+        self.fps_var = tk.StringVar(value=tr("status.fps_none"))
         ttk.Label(bar, textvariable=self.fps_var).pack(side="left", padx=10)
 
-        self.photo_var = tk.StringVar(value="照片: 0")
+        self.photo_var = tk.StringVar(value=tr("photo.count", n=0))
         ttk.Label(bar, textvariable=self.photo_var,
                   font=("Sans", 11, "bold")).pack(side="left", padx=8)
 
         btns = ttk.Frame(bar)
         btns.pack(side="right")
-        shot = ttk.Button(btns, text="拍照 (空格)", command=self._shot)
-        shot.pack(side="left", padx=4)
-        shot.focus_set()
+        self.shot_btn = ttk.Button(btns, text=tr("btn.shot"),
+                                   command=self._shot)
+        self.shot_btn.pack(side="left", padx=4)
+        self.shot_btn.focus_set()
         self.root.bind("<space>", lambda e: self._shot())
-        ttk.Button(btns, text="退出", command=self._on_close).pack(
-            side="left", padx=4)
+        self.quit_btn = ttk.Button(btns, text=tr("btn.quit"),
+                                   command=self._on_close)
+        self.quit_btn.pack(side="left", padx=4)
+        self.lang_btn = ttk.Button(btns, text=tr("lang.btn"),
+                                   command=self._toggle_lang)
+        self.lang_btn.pack(side="left", padx=4)
 
-        log_frame = ttk.LabelFrame(self.root, text="保存记录", padding=4)
-        log_frame.pack(side="bottom", fill="x")
-        self.listbox = tk.Listbox(log_frame, height=4)
+        self.log_frame = ttk.LabelFrame(self.root, text=tr("log.caption"),
+                                        padding=4)
+        self.log_frame.pack(side="bottom", fill="x")
+        self.listbox = tk.Listbox(self.log_frame, height=4)
         self.listbox.pack(fill="x")
+        self._force_log = False
+
+    # ---- 中英文切换 ----
+    def _toggle_lang(self):
+        set_lang("en" if get_lang() == "zh" else "zh")
+        self._apply_lang()
+
+    def _apply_lang(self):
+        self.root.title(tr("win.title"))
+        self.style_lb.configure(text=tr("label.style"))
+        self.lang_btn.configure(text=tr("lang.btn"))
+        self.shot_btn.configure(text=tr("btn.shot"))
+        self.quit_btn.configure(text=tr("btn.quit"))
+        self.log_frame.configure(text=tr("log.caption"))
+        idx = self.cb.current()
+        self.cb.configure(values=[mode_text(k, lb)
+                                  for k, lb in self._mode_info])
+        if 0 <= idx < len(self._mode_info):
+            self.cb.current(idx)
+        self._force_log = True
 
     def _on_mode(self, _evt=None):
-        idx = self.modes.index(self.mode_var.get()) \
-            if self.mode_var.get() in self.modes else 0
-        self.app.set_mode_by_index(idx)
+        idx = self.cb.current()
+        if idx >= 0:
+            self.app.set_mode_by_index(idx)
 
     def _shot(self):
         self.app.capture()
@@ -404,6 +619,7 @@ class TkUI(BaseUI):
             frame = None if st.frame is None else st.frame.copy()
             fps, ms = st.fps, st.infer_ms
             mode = st.mode_label
+            mode_key = getattr(st, "mode_key", "none")
             cnt = st.photo_count
             events = list(st.events)
 
@@ -416,13 +632,16 @@ class TkUI(BaseUI):
             self._photo = ImageTk.PhotoImage(image=img)
             self.video_label.configure(image=self._photo)
 
-        self.fps_var.set(f"FPS: {fps:.1f}  特效: {ms:.0f}ms  模式: {mode}")
-        self.photo_var.set(f"照片: {cnt}")
+        zh = self._key_zh.get(mode_key)
+        self.fps_var.set(tr("status.fps", fps=fps, ms=ms,
+                            mode=mode_text(mode_key, zh) if zh else mode))
+        self.photo_var.set(tr("photo.count", n=cnt))
 
-        if self.listbox.size() != len(events):
+        if self._force_log or self.listbox.size() != len(events):
+            self._force_log = False
             self.listbox.delete(0, "end")
-            for t, e in reversed(events):
-                self.listbox.insert("end", f"[{t}] {e}")
+            for ev in reversed(events):
+                self.listbox.insert("end", format_event(ev))
 
         self.root.after(33, self._tick)
 
@@ -435,7 +654,7 @@ class CvUI(BaseUI):
         super().__init__(state, app)
         self.modes = modes or ["原始"]
         self.window_w = window_w
-        self.win = "demo_style_camera (空格=拍照, s=切换特效, q=退出)"
+        self.win = tr("cv.hint")
         cv2.namedWindow(self.win, cv2.WINDOW_NORMAL)
 
     def run(self):
@@ -445,14 +664,16 @@ class CvUI(BaseUI):
             with self.state.lock:
                 frame = None if self.state.frame is None \
                     else self.state.frame.copy()
-                mode = self.state.mode_label
+                mode, mode_key = self.state.mode_label, self.state.mode_key
             if frame is None:
                 if cv2.waitKey(100) & 0xFF == ord("q"):
                     self.state.quit = True
                 continue
             h, w = frame.shape[:2]
             frame = cv2.resize(frame, (self.window_w, int(h * self.window_w / w)))
-            cv2.putText(frame, f"{mode}   photos={self.state.photo_count}",
+            cv2.putText(frame,
+                        f"{mode_text(mode_key, mode)}   "
+                        f"photos={self.state.photo_count}",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
                         (0, 255, 255), 2)
             cv2.imshow(self.win, frame)
@@ -464,6 +685,9 @@ class CvUI(BaseUI):
                 self.app.set_mode_by_index(idx)
             elif key == ord(" "):
                 self.app.capture()
+            elif key == ord("l"):
+                set_lang("en" if get_lang() == "zh" else "zh")
+                cv2.setWindowTitle(self.win, tr("cv.hint"))
         cv2.destroyAllWindows()
 
     def close(self):
